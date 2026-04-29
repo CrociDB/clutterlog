@@ -21,6 +21,18 @@ enum Commands {
     },
     /// Build the site in the current directory
     Build,
+    /// Build the site and serve it via HTTP
+    Server {
+        /// Override the site URL
+        #[arg(short = 'b')]
+        url: Option<String>,
+        /// Watch for file changes and rebuild
+        #[arg(long)]
+        watch: bool,
+        /// Port to listen on
+        #[arg(short = 'p', long, default_value = "8088")]
+        port: u16,
+    },
     /// Update media metadata in the current directory
     Update,
 }
@@ -48,7 +60,7 @@ fn main() {
         Commands::Build => {
             let path = Path::new(".");
             match Website::load(path) {
-                Ok(website) => match website.build() {
+                Ok(website) => match website.build(None) {
                     Ok(report) => {
                         println!("Site '{}' built successfully\n", website.info.title);
                         println!("{}", report);
@@ -58,6 +70,37 @@ fn main() {
                         std::process::exit(1);
                     }
                 },
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Server { url, watch, port } => {
+            let path = Path::new(".");
+            match Website::load(path) {
+                Ok(website) => {
+                    match website.build(url.as_deref()) {
+                        Ok(report) => {
+                            println!(
+                                "Site '{}' built successfully\n{}",
+                                website.info.title, report
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error building site: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+
+                    let build_dir = website.path.join("build");
+                    if let Err(e) =
+                        site::server::serve(build_dir, port, watch, website.path.clone(), url)
+                    {
+                        eprintln!("Server error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);

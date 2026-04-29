@@ -163,8 +163,11 @@ impl Website {
         Ok(website)
     }
 
-    pub fn build(&self) -> Result<BuildReport, WebsiteError> {
+    pub fn build(&self, base_url_override: Option<&str>) -> Result<BuildReport, WebsiteError> {
         let start = Instant::now();
+        let base_url = base_url_override
+            .unwrap_or(&self.info.url)
+            .trim_end_matches('/');
         let build_path = self.path.join(DEFAULT_BUILD_DIR);
         fs::create_dir_all(&build_path).map_err(|e| WebsiteError::Io(build_path.clone(), e))?;
 
@@ -182,7 +185,7 @@ impl Website {
 
         // Scan source media directory, copy files, generate thumbnails, and collect data entries
         let (clutterlog_data, rss_items, generation_results, items_skipped) =
-            self.scan_and_copy_media(&source_media_path, &build_media_path, &library)?;
+            self.scan_and_copy_media(&source_media_path, &build_media_path, &library, base_url)?;
 
         // Render index.html from template
         let rendered = TEMPLATE_INDEX
@@ -200,7 +203,6 @@ impl Website {
         } else {
             format!("{}\n", rss_items.join("\n"))
         };
-        let base_url = self.info.url.trim_end_matches('/');
         let feed_url = format!("{}/", base_url);
         let rss_rendered = TEMPLATE_RSS
             .replace("{{title}}", &escape_html(&self.info.title))
@@ -230,9 +232,8 @@ impl Website {
         source_path: &Path,
         dest_path: &Path,
         library: &MediaLibrary,
+        base_url: &str,
     ) -> Result<(String, Vec<String>, Vec<GenerationResult>, usize), WebsiteError> {
-        let base_url = self.info.url.trim_end_matches('/');
-
         if !source_path.exists() {
             return Ok(("[]".to_string(), Vec::new(), Vec::new(), 0));
         }

@@ -12,6 +12,8 @@ license = "BSD-3-Clause"
 homepage = "https://github.com/CrociDB/clutterlog"
 
 [dependencies]
+actix-files = "0.6"
+actix-web = "4"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 kamadak-exif = "0.5"
