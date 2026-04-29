@@ -14,6 +14,8 @@ homepage = "https://github.com/CrociDB/clutterlog"
 [dependencies]
 actix-files = "0.6"
 actix-web = "4"
+ctrlc = "3"
+notify = "8"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 kamadak-exif = "0.5"

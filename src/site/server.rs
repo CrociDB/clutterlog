@@ -1,11 +1,13 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use actix_files::Files;
 use actix_web::{App, HttpServer};
+use notify::{RecursiveMode, Watcher};
 
 use super::website::Website;
 
@@ -20,14 +22,23 @@ pub fn serve(
     println!("Serving at http://{}", addr);
     println!("Build directory: {}", build_dir.display());
 
+    let shutdown = Arc::new(AtomicBool::new(false));
+
     if watch {
         println!("Watching for changes...");
         let sp = site_path.clone();
         let url = base_url_override.clone();
+        let shutdown_w = shutdown.clone();
         thread::spawn(move || {
-            watch_loop(sp, url);
+            watch_loop(sp, url, shutdown_w);
         });
     }
+
+    let shutdown_s = shutdown.clone();
+    ctrlc::set_handler(move || {
+        shutdown_s.store(true, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let build_dir_server = build_dir.clone();
     let server = HttpServer::new(move || {
@@ -39,56 +50,47 @@ pub fn serve(
     actix_web::rt::System::new().block_on(server)
 }
 
-fn watch_loop(site_path: PathBuf, base_url_override: Option<String>) {
+fn watch_loop(site_path: PathBuf, base_url_override: Option<String>, shutdown: Arc<AtomicBool>) {
+    let (tx, rx) = channel();
+
+    let mut watcher = match notify::recommended_watcher(tx) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to create file watcher: {}", e);
+            return;
+        }
+    };
+
     let media_path = site_path.join("media");
     let site_toml = site_path.join("site.toml");
 
-    let mut last_site_toml_mtime = mtime(&site_toml);
-    let mut media_mtimes: HashMap<PathBuf, SystemTime> = HashMap::new();
+    if media_path.exists()
+        && let Err(e) = watcher.watch(&media_path, RecursiveMode::Recursive)
+    {
+        eprintln!("Failed to watch media directory: {}", e);
+    }
 
-    sync_mtimes(&media_path, &mut media_mtimes);
+    if site_toml.exists()
+        && let Err(e) = watcher.watch(&site_toml, RecursiveMode::NonRecursive)
+    {
+        eprintln!("Failed to watch site.toml: {}", e);
+    }
+
+    let debounce_duration = Duration::from_millis(300);
 
     loop {
-        thread::sleep(Duration::from_millis(500));
-
-        let mut changed = false;
-
-        if let Some(current) = mtime(&site_toml)
-            && last_site_toml_mtime != Some(current)
-        {
-            changed = true;
-            last_site_toml_mtime = Some(current);
+        if shutdown.load(Ordering::SeqCst) {
+            println!("Shutting down watcher...");
+            break;
         }
 
-        let mut current: HashMap<PathBuf, SystemTime> = HashMap::new();
-        sync_mtimes(&media_path, &mut current);
+        if rx.recv_timeout(debounce_duration).is_ok() {
+            while rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
 
-        for (path, mtime) in &current {
-            match media_mtimes.get(path) {
-                Some(old) if old != mtime => {
-                    changed = true;
-                    break;
-                }
-                None => {
-                    changed = true;
-                    break;
-                }
-                _ => {}
+            if shutdown.load(Ordering::SeqCst) {
+                break;
             }
-        }
 
-        if !changed {
-            for path in media_mtimes.keys() {
-                if !current.contains_key(path) {
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
-        media_mtimes = current;
-
-        if changed {
             println!("Change detected, rebuilding...");
             match Website::load(&site_path) {
                 Ok(website) => match website.build(base_url_override.as_deref()) {
@@ -96,24 +98,6 @@ fn watch_loop(site_path: PathBuf, base_url_override: Option<String>) {
                     Err(e) => eprintln!("Error rebuilding: {}", e),
                 },
                 Err(e) => eprintln!("Error loading site: {}", e),
-            }
-        }
-    }
-}
-
-fn mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok()?.modified().ok()
-}
-
-fn sync_mtimes(dir: &Path, map: &mut HashMap<PathBuf, SystemTime>) {
-    map.clear();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file()
-                && let Some(t) = mtime(&path)
-            {
-                map.insert(path, t);
             }
         }
     }
